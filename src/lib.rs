@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use anyhow::Result;
 use log::error;
 use redb::{AccessGuard, Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, Table, TableDefinition, TableHandle};
@@ -6,6 +7,8 @@ use rig_core::memory::{ConversationMemory, MemoryError, MessageFilter};
 use rig_core::wasm_compat::WasmBoxedFuture;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use rig_core::message::AssistantContent;
+use rig_core::message::UserContent::Text;
 
 pub enum CacheLoad<T: AsRef<str>> {
     NoCache,
@@ -60,13 +63,46 @@ impl REDBMemory {
         Ok(memory)
     }
 
-    pub fn get_all_chats(&self) -> Result<Vec<String>> {
-        let mut chats = Vec::new();
+    pub fn get_all_chats(&self) -> Result<HashMap<String, String>> {
+        let mut chats = HashMap::new();
         let guard = self.lock()?;
         let read = guard.begin_read()?;
         let tables = read.list_tables()?;
         for table in tables {
-            chats.push(table.name().to_string());
+            let first_message = match read.open_table(TableDefinition::<u64, Vec<u8>>::new(table.name())) {
+                Ok(table) => {
+                    let first_message = match table.get(0) {
+                        Ok(first_message) => first_message,
+                        Err(_) => {continue}
+                    };
+                    let first_message = match first_message {
+                        Some(first_message) => first_message,
+                        None => {continue}
+                    };
+                    let first_message = rmp_serde::from_slice::<Message>(&first_message.value());
+                    match first_message {
+                        Ok(first_message) => first_message,
+                        Err(_) => continue,
+                    }
+                },
+                Err(_) => continue,
+            };
+            let first_message = match first_message {
+                Message::System { content } => content,
+                Message::User { content } => {
+                    match content.first() {
+                        Text(first_message) => first_message.text,
+                        _ => String::from("Media"),
+                    }
+                }
+                Message::Assistant { content, .. } => {
+                    match content.first() {
+                        AssistantContent::Text(first_message) => first_message.text,
+                        _ => String::from("Media"),
+                    }
+                }
+            };
+            chats.insert(table.name().to_string(), first_message);
         }
         Ok(chats)
     }
@@ -286,8 +322,10 @@ mod test {
         let tables = memory.get_all_chats().unwrap();
         fs::remove_file(database_name).unwrap();
         assert_eq!(2, tables.len());
-        assert!(tables.contains(&String::from("1")));
-        assert!(tables.contains(&String::from("2")));
+        assert!(tables.contains_key(&String::from("1")));
+        assert_eq!(tables.get(&String::from("1")).unwrap().clone(), String::from("Test Message") );
+        assert!(tables.contains_key(&String::from("2")));
+        assert_eq!(tables.get(&String::from("2")).unwrap().clone(), String::from("Test Message") );
     }
 
     #[tokio::test]
