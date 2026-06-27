@@ -1,9 +1,6 @@
 use anyhow::Result;
 use log::error;
-use redb::{
-    AccessGuard, Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, Table,
-    TableDefinition,
-};
+use redb::{AccessGuard, Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, Table, TableDefinition, TableHandle};
 use rig_core::completion::Message;
 use rig_core::memory::{ConversationMemory, MemoryError, MessageFilter};
 use rig_core::wasm_compat::WasmBoxedFuture;
@@ -61,6 +58,17 @@ impl REDBMemory {
             filter: None,
         };
         Ok(memory)
+    }
+
+    pub fn get_all_chats(&self) -> Result<Vec<String>> {
+        let mut chats = Vec::new();
+        let guard = self.lock()?;
+        let read = guard.begin_read()?;
+        let tables = read.list_tables()?;
+        for table in tables {
+            chats.push(table.name().to_string());
+        }
+        Ok(chats)
     }
 
     pub fn with_filter<F>(mut self, filter: F) -> Self
@@ -264,6 +272,22 @@ mod test {
         let messages = memory.load(CONVERSATION_ID).await.unwrap();
         fs::remove_file(database_name).unwrap();
         assert_eq!(Vec::<Message>::new(), messages)
+    }
+
+    #[tokio::test]
+    async fn test_get_tables() {
+        let database_name = nanoid!();
+        let memory = REDBMemory::new(&database_name, NoCache::<&str>).unwrap();
+        let message = Message::system("Test Message");
+
+        memory.append(CONVERSATION_ID, vec![message.clone()]).await.unwrap();
+        memory.append("2", vec![message.clone()]).await.unwrap();
+
+        let tables = memory.get_all_chats().unwrap();
+        fs::remove_file(database_name).unwrap();
+        assert_eq!(2, tables.len());
+        assert!(tables.contains(&String::from("1")));
+        assert!(tables.contains(&String::from("2")));
     }
 
     #[tokio::test]
