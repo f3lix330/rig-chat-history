@@ -156,14 +156,28 @@ impl ConversationMemory for REDBMemory {
             let messages = {
                 let mut messages = vec![];
 
-                if let Some(cache) = &self.cache {
+                if let Some(cache) = &self.cache && !cache.lock().map_err(|e| MemoryError::Internal(e.to_string()))?.is_empty() {
                     let cache = cache
                         .lock()
                         .map_err(|e| MemoryError::Internal(e.to_string()))?;
 
                     messages.extend_from_slice(&cache);
                     messages
-                } else {
+                }
+                else if let Some(cache) = &self.cache && cache.lock().map_err(|e| MemoryError::Internal(e.to_string()))?.is_empty() {
+                    for message in self.get_all_messages(conversation_id).unwrap_or_default() {
+                        let message_for_return: Message = rmp_serde::from_slice(&message)
+                            .map_err(|e| MemoryError::Internal(e.to_string()))?;
+
+                        let message_for_cache = rmp_serde::from_slice(&message)
+                            .map_err(|e| MemoryError::Internal(e.to_string()))?;
+
+                        messages.push(message_for_return);
+                        cache.lock().map_err(|e| MemoryError::Internal(e.to_string()))?.push(message_for_cache);
+                    }
+                    messages
+                }
+                else {
                     for message in self.get_all_messages(conversation_id).unwrap_or_default() {
                         let message = rmp_serde::from_slice(&message)
                             .map_err(|e| MemoryError::Internal(e.to_string()))?;
