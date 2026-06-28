@@ -41,7 +41,7 @@ impl REDBMemory {
                     .range(0..table.len().unwrap_or_default())?
                     .map(|item| {
                         let (_, value) = item.map_err(|e| MemoryError::Internal(e.to_string()))?;
-                        rmp_serde::from_slice::<Message>(&value.value())
+                        bson::deserialize_from_slice::<Message>(&value.value())
                             .map_err(|e| MemoryError::Internal(e.to_string()))
                     })
                     .collect::<Result<Vec<Message>, MemoryError>>()
@@ -79,7 +79,7 @@ impl REDBMemory {
                         Some(first_message) => first_message,
                         None => {continue}
                     };
-                    let first_message = rmp_serde::from_slice::<Message>(&first_message.value());
+                    let first_message = bson::deserialize_from_slice::<Message>(&first_message.value());
                     match first_message {
                         Ok(first_message) => first_message,
                         Err(_) => continue,
@@ -156,31 +156,52 @@ impl ConversationMemory for REDBMemory {
             let messages = {
                 let mut messages = vec![];
 
-                if let Some(cache) = &self.cache && !cache.lock().map_err(|e| MemoryError::Internal(e.to_string()))?.is_empty() {
+                if let Some(cache) = &self.cache && !cache.lock().map_err(|e| {
+                    error!("Failed to lock mutex: {}", e);
+                    MemoryError::Internal(e.to_string())
+                })?.is_empty() {
                     let cache = cache
                         .lock()
-                        .map_err(|e| MemoryError::Internal(e.to_string()))?;
+                        .map_err(|e| {
+                            error!("Failed to lock cache: {}", e);
+                            MemoryError::Internal(e.to_string())
+                        })?;
 
                     messages.extend_from_slice(&cache);
                     messages
                 }
-                else if let Some(cache) = &self.cache && cache.lock().map_err(|e| MemoryError::Internal(e.to_string()))?.is_empty() {
+                else if let Some(cache) = &self.cache && cache.lock().map_err(|e| {
+                    error!("Failed to lock mutex: {}", e);
+                    MemoryError::Internal(e.to_string())
+                })?.is_empty() {
                     for message in self.get_all_messages(conversation_id).unwrap_or_default() {
-                        let message_for_return: Message = rmp_serde::from_slice(&message)
-                            .map_err(|e| MemoryError::Internal(e.to_string()))?;
+                        let message_for_return: Message = bson::deserialize_from_slice(&message)
+                            .map_err(|e| {
+                                error!("Failed to deserialize message: {}", e);
+                                MemoryError::Internal(e.to_string())
+                            })?;
 
-                        let message_for_cache = rmp_serde::from_slice(&message)
-                            .map_err(|e| MemoryError::Internal(e.to_string()))?;
+                        let message_for_cache = bson::deserialize_from_slice(&message)
+                            .map_err(|e| {
+                                error!("Failed to deserialize message: {}", e);
+                                MemoryError::Internal(e.to_string())
+                            })?;
 
                         messages.push(message_for_return);
-                        cache.lock().map_err(|e| MemoryError::Internal(e.to_string()))?.push(message_for_cache);
+                        cache.lock().map_err(|e| {
+                            error!("Failed to lock cache: {}", e);
+                            MemoryError::Internal(e.to_string())
+                        })?.push(message_for_cache);
                     }
                     messages
                 }
                 else {
                     for message in self.get_all_messages(conversation_id).unwrap_or_default() {
-                        let message = rmp_serde::from_slice(&message)
-                            .map_err(|e| MemoryError::Internal(e.to_string()))?;
+                        let message = bson::deserialize_from_slice(&message)
+                            .map_err(|e| {
+                                error!("Failed to deserialize message: {}", e);
+                                MemoryError::Internal(e.to_string())
+                            })?;
                         messages.push(message);
                     }
                     messages
@@ -213,7 +234,7 @@ impl ConversationMemory for REDBMemory {
                 for message in &messages {
                     let last_index = table.len().unwrap_or_default();
                     table
-                        .insert(last_index, rmp_serde::to_vec(&message).unwrap_or_default())
+                        .insert(last_index, bson::serialize_to_vec(&message).unwrap_or_default())
                         .map_err(|e| MemoryError::Internal(e.to_string()))?;
                 }
 
@@ -266,10 +287,10 @@ mod test {
     use nanoid::nanoid;
     use rig_core::message::Message::User;
     use rig_core::message::UserContent::Text;
-    use rig_core::schemars::_private::serde_json::Value;
-    use rig_core::schemars::_private::serde_json::Value::Object;
     use rig_core::OneOrMany;
     use std::fs;
+    use serde_json::Value;
+    use serde_json::Value::Object;
 
     static CONVERSATION_ID: &str = "1";
 
@@ -364,7 +385,7 @@ mod test {
             .map(|m| m.unwrap().1)
             .collect::<Vec<_>>()
             .iter()
-            .map(|s| rmp_serde::from_slice::<Message>((&s.value()).as_ref()).unwrap())
+            .map(|s| bson::deserialize_from_slice::<Message>((&s.value()).as_ref()).unwrap())
             .collect::<Vec<_>>();
 
         fs::remove_file(database_name).unwrap();
@@ -400,7 +421,7 @@ mod test {
             .map(|m| m.unwrap().1)
             .collect::<Vec<_>>()
             .iter()
-            .map(|s| rmp_serde::from_slice::<Message>((&s.value()).as_ref()).unwrap())
+            .map(|s| bson::deserialize_from_slice::<Message>((&s.value()).as_ref()).unwrap())
             .collect::<Vec<_>>();
 
         fs::remove_file(database_name).unwrap();
@@ -441,15 +462,15 @@ mod test {
 
     #[tokio::test]
     async fn test_load_chat_into_cache() {
-        let memory = REDBMemory::new("database/chat", TryExistingCache("12345")).unwrap();
+        let memory = REDBMemory::new("database/chat", TryExistingCache("7xrRM2bdJ_Dq")).unwrap();
 
-        let messages = memory.load("12345").await.unwrap();
+        let messages = memory.load("7xrRM2bdJ_Dq").await.unwrap();
 
         assert_eq!(
             &User {
                 content: OneOrMany::one(Text(rig_core::agent::Text {
-                    text: "Ich bin 20 Jahre alt\r\n".to_string(),
-                    additional_params: Some(Object(serde_json::map::Map::<String, Value>::new())),
+                    text: "Wie ist das wetter in Berlin?".to_string(),
+                    additional_params: Some(Object(serde_json::map::Map::new())),
                 }))
             },
             messages.get(0).unwrap()
@@ -459,10 +480,28 @@ mod test {
     #[tokio::test]
     async fn test_load_chat_into_cache_table_missing() {
         let memory =
-            REDBMemory::new("database/chat_duplicate", TryExistingCache("123456")).unwrap();
+            REDBMemory::new("database/chat1", TryExistingCache("123456")).unwrap();
 
         let messages = memory.load("123456").await.unwrap();
 
         assert_eq!(Vec::<Message>::new(), messages);
+    }
+
+    #[tokio::test]
+    async fn existing_chat_into_cache() {
+        let memory =
+            REDBMemory::new("database/chat2", NewCache::<&str>).unwrap();
+
+        let messages = memory.load("7xrRM2bdJ_Dq").await.unwrap();
+
+        assert_eq!(
+            &User {
+                content: OneOrMany::one(Text(rig_core::agent::Text {
+                    text: "Wie ist das wetter in Berlin?".to_string(),
+                    additional_params: Some(Object(serde_json::map::Map::<String, Value>::new())),
+                }))
+            },
+            messages.get(0).unwrap()
+        );
     }
 }
